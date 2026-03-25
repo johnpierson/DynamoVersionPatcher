@@ -21,4 +21,10 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
+
+  <Target Name="CopyToDistFolder" AfterTargets="Publish">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\dist" />
+    <Copy SourceFiles="$(PublishDir)$(AssemblyName).exe" DestinationFolder="$(MSBuildProjectDirectory)\dist" />
+  </Target>
+
 </Project>
