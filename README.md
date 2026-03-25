@@ -2,7 +2,7 @@
 
 A small command-line utility that upgrades the **DynamoCore runtime** bundled with Revit 2026 to version **3.6.2** — no Revit reinstall, no waiting for a service pack.
 
-> **Use at your own risk.** This tool modifies files inside your Revit installation. It is unofficial and unaffiliated with Autodesk or the Dynamo team. Taking a backup first (see `--backup-dir`) is always a good idea.
+> **Use at your own risk.** This tool modifies files inside your Revit installation. It is unofficial and unaffiliated with Autodesk or the Dynamo team. A backup is taken automatically before any changes are made.
 
 ## Why this exists
 
@@ -13,9 +13,10 @@ It was built to answer the question "what if" and shared here in the hope that o
 ## What it does
 
 1. Checks that you are running as Administrator and that Revit is closed.
-2. Downloads the official `DynamoCoreRuntime3.6.2` zip from the [DynamoDS GitHub releases page](https://github.com/DynamoDS/Dynamo/releases).
-3. Extracts the runtime into your Revit 2026 DynamoForRevit directory.
-4. Verifies the installed version matches the expected target.
+2. Backs up your current DynamoForRevit installation to `Documents\DynamoForRevit_Backup`.
+3. Downloads the official `DynamoCoreRuntime3.6.2` zip from the [DynamoDS GitHub releases page](https://github.com/DynamoDS/Dynamo/releases).
+4. Extracts the runtime into your Revit 2026 DynamoForRevit directory.
+5. Verifies the installed version matches the expected target.
 
 The Revit-specific Dynamo bridge files (e.g. `DynamoRevitDS.dll`) are left untouched — only the core runtime is updated.
 
@@ -44,21 +45,28 @@ You'll likely see a SmartScreen prompt the first time you run it — this is nor
 Run from an administrator command prompt for more control:
 
 ```
-DynamoCoreUpdate.exe [--install-dir <path>] [--zip-path <file>] [--backup-dir <path>] [--force]
+DynamoCoreUpdate.exe [--install-dir <path>] [--zip-path <file>] [--backup-dir <path>] [--no-backup] [--force]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--install-dir <path>` | Path to the DynamoForRevit folder. Defaults to `C:\Program Files\Autodesk\Revit 2026\AddIns\DynamoForRevit` |
 | `--zip-path <file>` | Use a locally downloaded zip instead of downloading from GitHub |
-| `--backup-dir <path>` | Copy the current installation here before patching |
+| `--backup-dir <path>` | Override the default backup location (`Documents\DynamoForRevit_Backup`) |
+| `--no-backup` | Skip the backup step entirely |
 | `--force` | Re-install even if already on the target version |
 
 ### Examples
 
 ```
-# Back up before patching
+# Default run — backs up to Documents\DynamoForRevit_Backup automatically
+DynamoCoreUpdate.exe
+
+# Override the backup location
 DynamoCoreUpdate.exe --backup-dir "C:\DynamoBackup"
+
+# Skip the backup
+DynamoCoreUpdate.exe --no-backup
 
 # Use a local zip (useful on air-gapped machines)
 DynamoCoreUpdate.exe --zip-path "D:\Downloads\DynamoCoreRuntime3.6.2.11575.zip"
@@ -69,10 +77,10 @@ DynamoCoreUpdate.exe --install-dir "D:\Autodesk\Revit 2026\AddIns\DynamoForRevit
 
 ## Restoring from backup
 
-If you used `--backup-dir`, restoring is straightforward:
+The backup is saved to `Documents\DynamoForRevit_Backup` by default. To restore:
 
 ```
-xcopy /E /H /Y "C:\DynamoBackup\*" "C:\Program Files\Autodesk\Revit 2026\AddIns\DynamoForRevit\"
+xcopy /E /H /Y "%USERPROFILE%\Documents\DynamoForRevit_Backup\*" "C:\Program Files\Autodesk\Revit 2026\AddIns\DynamoForRevit\"
 ```
 
 Or just copy the backup folder contents back using Windows Explorer.

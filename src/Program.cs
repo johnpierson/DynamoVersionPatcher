@@ -11,7 +11,9 @@ const string DefaultInstallDir = @"C:\Program Files\Autodesk\Revit 2026\AddIns\D
 
 string installDir = DefaultInstallDir;
 string? zipPath   = null;
-string? backupDir = null;
+string  backupDir = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+    "DynamoForRevit_Backup");
 bool    force     = false;
 
 for (int i = 0; i < args.Length; i++)
@@ -21,6 +23,7 @@ for (int i = 0; i < args.Length; i++)
         case "--zip-path"    when i + 1 < args.Length: zipPath    = args[++i]; break;
         case "--install-dir" when i + 1 < args.Length: installDir = args[++i]; break;
         case "--backup-dir"  when i + 1 < args.Length: backupDir  = args[++i]; break;
+        case "--no-backup":                              backupDir  = "";        break;
         case "--force":                                  force      = true;      break;
     }
 }
@@ -59,16 +62,20 @@ if (currentVersion == TargetVersion && !force)
     return 0;
 }
 
-// ── optional backup ───────────────────────────────────────────────────────────
+// ── backup ────────────────────────────────────────────────────────────────────
 
-if (backupDir is not null)
+if (!string.IsNullOrEmpty(backupDir))
 {
     Step($"Backing up existing installation");
     Console.WriteLine($"  → {backupDir}");
     if (Directory.Exists(backupDir))
-        Abort($"Backup directory already exists: {backupDir}");
+        Abort($"Backup directory already exists: {backupDir}\n  Delete it or specify a different path with --backup-dir, or skip backup with --no-backup.");
     CopyDirectory(installDir, backupDir);
     Ok("Backup complete");
+}
+else
+{
+    Warn("Skipping backup (--no-backup specified)");
 }
 
 // ── acquire zip ───────────────────────────────────────────────────────────────
