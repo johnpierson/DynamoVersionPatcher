@@ -1,4 +1,4 @@
-# DynamoRevitPatcher
+# DynamoVersionPatcher
 
 A small command-line utility that upgrades the **DynamoCore runtime** bundled with Revit 2026 to version **3.6.2** — no Revit reinstall, no waiting for a service pack.
 
