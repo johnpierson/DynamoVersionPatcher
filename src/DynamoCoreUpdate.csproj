@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AssemblyTitle>DynamoCore 3.6.2 Update for Revit 2026</AssemblyTitle>
+    <AssemblyTitle>DynamoVersionPatcher 3.6.2</AssemblyTitle>
     <AssemblyVersion>3.6.2.0</AssemblyVersion>
     <FileVersion>3.6.2.0</FileVersion>
   </PropertyGroup>

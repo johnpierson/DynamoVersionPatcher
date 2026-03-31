@@ -3,35 +3,83 @@ using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Principal;
 
-const string DownloadUrl  = "https://github.com/DynamoDS/Dynamo/releases/download/v3.6.2/DynamoCoreRuntime3.6.2.11575.zip";
+// ── host configuration ────────────────────────────────────────────────────────
+
+HostConfig[] knownHosts =
+[
+    new HostConfig(
+        Key:                  "revit",
+        DisplayName:          "Autodesk Revit 2026",
+        DefaultInstallDir:    @"C:\Program Files\Autodesk\Revit 2026\AddIns\DynamoForRevit",
+        ProcessName:          "Revit",
+        BackupFolderName:     "DynamoForRevit_Backup",
+        BridgeDllPath:        @"Revit\DynamoRevitDS.dll",
+        BridgeDllDisplayName: "DynamoRevitDS.dll"),
+
+    new HostConfig(
+        Key:                  "civil3d",
+        DisplayName:          "Autodesk Civil 3D 2026",
+        DefaultInstallDir:    @"C:\Program Files\Autodesk\AutoCAD 2026\C3D\Dynamo\Core",
+        ProcessName:          "acad",
+        BackupFolderName:     "DynamoForCivil3D_Backup",
+        BridgeDllPath:        null,
+        BridgeDllDisplayName: null),
+];
+
+const string DownloadUrl   = "https://github.com/DynamoDS/Dynamo/releases/download/v3.6.2/DynamoCoreRuntime3.6.2.11575.zip";
 const string TargetVersion = "3.6.2.11575";
-const string DefaultInstallDir = @"C:\Program Files\Autodesk\Revit 2026\AddIns\DynamoForRevit";
 
 // ── argument parsing ──────────────────────────────────────────────────────────
 
-string installDir = DefaultInstallDir;
-string? zipPath   = null;
-string  backupDir = Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-    "DynamoForRevit_Backup");
-bool    force     = false;
+string? hostKey           = null;
+string? installDirArg     = null;
+string? zipPath           = null;
+string? backupDirOverride = null;
+bool    noBackup          = false;
+bool    force             = false;
 
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i].ToLowerInvariant())
     {
-        case "--zip-path"    when i + 1 < args.Length: zipPath    = args[++i]; break;
-        case "--install-dir" when i + 1 < args.Length: installDir = args[++i]; break;
-        case "--backup-dir"  when i + 1 < args.Length: backupDir  = args[++i]; break;
-        case "--no-backup":                              backupDir  = "";        break;
-        case "--force":                                  force      = true;      break;
+        case "--host"        when i + 1 < args.Length: hostKey           = args[++i]; break;
+        case "--zip-path"    when i + 1 < args.Length: zipPath           = args[++i]; break;
+        case "--install-dir" when i + 1 < args.Length: installDirArg     = args[++i]; break;
+        case "--backup-dir"  when i + 1 < args.Length: backupDirOverride = args[++i]; break;
+        case "--no-backup":                              noBackup          = true;      break;
+        case "--force":                                  force             = true;      break;
     }
 }
 
-// ── header ────────────────────────────────────────────────────────────────────
+// ── header & host selection ───────────────────────────────────────────────────
 
-Console.Title = "DynamoCore 3.6.2 Update for Revit 2026";
+Console.Title = "DynamoVersionPatcher";
 WriteHeader();
+
+HostConfig host;
+
+if (hostKey is not null)
+{
+    var matched = knownHosts.FirstOrDefault(h => h.Key.Equals(hostKey, StringComparison.OrdinalIgnoreCase));
+    if (matched is null)
+        Abort($"Unknown host '{hostKey}'. Valid values: {string.Join(", ", knownHosts.Select(h => h.Key))}");
+    host = matched!;
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.Write("==> ");
+    Console.ResetColor();
+    Console.WriteLine($"Host: {host.DisplayName}");
+}
+else
+{
+    host = PickHost(knownHosts);
+}
+
+Console.Title = $"DynamoVersionPatcher — {host.DisplayName}";
+
+string installDir = installDirArg ?? host.DefaultInstallDir;
+string backupDir  = noBackup ? "" :
+    backupDirOverride ??
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), host.BackupFolderName);
 
 // ── prerequisites ─────────────────────────────────────────────────────────────
 
@@ -41,14 +89,14 @@ if (!IsAdministrator())
     Abort("This tool must be run as Administrator. Right-click and choose 'Run as administrator'.");
 Ok("Running as Administrator");
 
-var revitProcs = Process.GetProcessesByName("Revit");
-if (revitProcs.Length > 0)
-    Abort("Revit is currently running. Close Revit before running this installer.");
-Ok("Revit is not running");
+var hostProcs = Process.GetProcessesByName(host.ProcessName);
+if (hostProcs.Length > 0)
+    Abort($"{host.DisplayName} is currently running. Close it before running this installer.");
+Ok($"{host.DisplayName} is not running");
 
 if (!Directory.Exists(installDir))
-    Abort($"DynamoForRevit directory not found:\n  {installDir}\n  Ensure Revit 2026 with DynamoForRevit is installed.");
-Ok($"DynamoForRevit found");
+    Abort($"Dynamo directory not found:\n  {installDir}\n  Ensure {host.DisplayName} with Dynamo is installed, or use --install-dir to specify the path.");
+Ok($"Dynamo directory found");
 
 string coreDll        = Path.Combine(installDir, "DynamoCore.dll");
 string currentVersion = GetFileVersion(coreDll)
@@ -60,22 +108,6 @@ if (currentVersion == TargetVersion && !force)
     Warn($"DynamoCore.dll is already at version {TargetVersion}. Use --force to reinstall.");
     Pause();
     return 0;
-}
-
-// ── backup ────────────────────────────────────────────────────────────────────
-
-if (!string.IsNullOrEmpty(backupDir))
-{
-    Step($"Backing up existing installation");
-    Console.WriteLine($"  → {backupDir}");
-    if (Directory.Exists(backupDir))
-        Abort($"Backup directory already exists: {backupDir}\n  Delete it or specify a different path with --backup-dir, or skip backup with --no-backup.");
-    CopyDirectory(installDir, backupDir);
-    Ok("Backup complete");
-}
-else
-{
-    Warn("Skipping backup (--no-backup specified)");
 }
 
 // ── acquire zip ───────────────────────────────────────────────────────────────
@@ -108,6 +140,36 @@ else
     }
 }
 
+// ── backup (only files the zip will overwrite) ────────────────────────────────
+
+if (!string.IsNullOrEmpty(backupDir))
+{
+    // Append timestamp so reruns never collide
+    backupDir = $"{backupDir}_{DateTime.Now:yyyyMMdd_HHmmss}";
+
+    Step("Backing up files to be replaced");
+    Console.WriteLine($"  → {backupDir}");
+
+    using var peekArchive = ZipFile.OpenRead(localZip);
+    int backedUp = 0;
+    foreach (var entry in peekArchive.Entries)
+    {
+        if (string.IsNullOrEmpty(entry.Name)) continue;
+        string src = Path.Combine(installDir, entry.FullName);
+        if (!File.Exists(src)) continue;
+
+        string dst = Path.Combine(backupDir, entry.FullName);
+        Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+        File.Copy(src, dst, overwrite: true);
+        backedUp++;
+    }
+    Ok($"Backed up {backedUp} file(s)");
+}
+else
+{
+    Warn("Skipping backup (--no-backup specified)");
+}
+
 // ── extract ───────────────────────────────────────────────────────────────────
 
 Step("Extracting files");
@@ -129,7 +191,6 @@ using (var archive = ZipFile.OpenRead(localZip))
         entry.ExtractToFile(dest, overwrite: true);
         copied++;
 
-        // Rewrite progress on the same line
         Console.Write($"\r  {copied,5}/{total} files");
     }
     Console.WriteLine();
@@ -154,17 +215,20 @@ if (newVersion != TargetVersion)
     Abort($"Version mismatch after extraction.\n  Expected: {TargetVersion}\n  Found:    {newVersion}");
 Ok($"DynamoCore.dll:      {newVersion}");
 
-string revitDll = Path.Combine(installDir, @"Revit\DynamoRevitDS.dll");
-if (File.Exists(revitDll))
-    Ok($"DynamoRevitDS.dll:   {GetFileVersion(revitDll)} (preserved)");
-else
-    Warn("DynamoRevitDS.dll not found — Revit-specific files may need reinstalling.");
+if (host.BridgeDllPath is not null)
+{
+    string bridgeDll = Path.Combine(installDir, host.BridgeDllPath);
+    if (File.Exists(bridgeDll))
+        Ok($"{host.BridgeDllDisplayName}:   {GetFileVersion(bridgeDll)} (preserved)");
+    else
+        Warn($"{host.BridgeDllDisplayName} not found — host-specific files may need reinstalling.");
+}
 
 // ── done ──────────────────────────────────────────────────────────────────────
 
 Console.WriteLine();
 Console.ForegroundColor = ConsoleColor.Green;
-Console.WriteLine($"  Installation complete!");
+Console.WriteLine("  Installation complete!");
 Console.WriteLine($"  DynamoCore upgraded: {currentVersion} → {newVersion}");
 Console.ResetColor();
 
@@ -173,6 +237,42 @@ return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+static HostConfig PickHost(HostConfig[] hosts)
+{
+    Console.WriteLine();
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.Write("==> ");
+    Console.ResetColor();
+    Console.WriteLine("Select host application");
+    Console.WriteLine();
+
+    for (int i = 0; i < hosts.Length; i++)
+    {
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.Write($"  [{i + 1}]");
+        Console.ResetColor();
+        Console.WriteLine($"  {hosts[i].DisplayName}");
+    }
+
+    Console.WriteLine();
+    Console.Write($"  Enter selection [1-{hosts.Length}]: ");
+
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (int.TryParse(key.KeyChar.ToString(), out int choice) && choice >= 1 && choice <= hosts.Length)
+        {
+            Console.WriteLine(key.KeyChar);
+            var selected = hosts[choice - 1];
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.Write("  [OK] ");
+            Console.ResetColor();
+            Console.WriteLine($"Selected: {selected.DisplayName}");
+            return selected;
+        }
+    }
+}
+
 static bool IsAdministrator() =>
     new WindowsPrincipal(WindowsIdentity.GetCurrent())
         .IsInRole(WindowsBuiltInRole.Administrator);
@@ -180,22 +280,11 @@ static bool IsAdministrator() =>
 static string? GetFileVersion(string path) =>
     File.Exists(path) ? FileVersionInfo.GetVersionInfo(path).FileVersion : null;
 
-static void CopyDirectory(string src, string dst)
-{
-    Directory.CreateDirectory(dst);
-    foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
-    {
-        string rel  = Path.GetRelativePath(src, file);
-        string dest = Path.Combine(dst, rel);
-        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-        File.Copy(file, dest, overwrite: true);
-    }
-}
 
 static async Task DownloadWithProgressAsync(string url, string dest)
 {
     using var client = new HttpClient();
-    client.DefaultRequestHeaders.Add("User-Agent", "DynamoCoreUpdate/3.6.2");
+    client.DefaultRequestHeaders.Add("User-Agent", "DynamoVersionPatcher/3.6.2");
 
     using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
     response.EnsureSuccessStatusCode();
@@ -204,7 +293,7 @@ static async Task DownloadWithProgressAsync(string url, string dest)
     using var src    = await response.Content.ReadAsStreamAsync();
     using var output = File.Create(dest);
 
-    var buffer    = new byte[81920];
+    var  buffer   = new byte[81920];
     long received = 0;
     int  read;
 
@@ -216,7 +305,7 @@ static async Task DownloadWithProgressAsync(string url, string dest)
         if (total.HasValue)
         {
             int pct = (int)(received * 100 / total.Value);
-            int bar = pct / 4; // 25-char bar
+            int bar = pct / 4;
             Console.Write($"\r  [{new string('=', bar)}{new string(' ', 25 - bar)}] {pct,3}%  ({received / 1_048_576} MB / {total.Value / 1_048_576} MB)");
         }
         else
@@ -230,8 +319,19 @@ static async Task DownloadWithProgressAsync(string url, string dest)
 static void WriteHeader()
 {
     Console.ForegroundColor = ConsoleColor.Cyan;
-    Console.WriteLine("DynamoCore 3.6.2 Update for Revit 2026");
-    Console.WriteLine("=======================================");
+    Console.WriteLine();
+    Console.WriteLine(@"  ██████╗ ██╗   ██╗███╗   ██╗ █████╗ ███╗   ███╗  ██████╗ ");
+    Console.WriteLine(@"  ██╔══██╗╚██╗ ██╔╝████╗  ██║██╔══██╗████╗ ████║ ██╔═══██╗");
+    Console.WriteLine(@"  ██║  ██║ ╚████╔╝ ██╔██╗ ██║███████║██╔████╔██║ ██║   ██║");
+    Console.WriteLine(@"  ██║  ██║  ╚██╔╝  ██║╚██╗██║██╔══██║██║╚██╔╝██║ ██║   ██║");
+    Console.WriteLine(@"  ██████╔╝   ██║   ██║ ╚████║██║  ██║██║ ╚═╝ ██║ ╚██████╔╝");
+    Console.WriteLine(@"  ╚═════╝    ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═════╝ ");
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.WriteLine();
+    Console.WriteLine(@"       ╔═══════════════════════════════════════════════╗");
+    Console.WriteLine(@"       ║        V E R S I O N   P A T C H E R         ║");
+    Console.WriteLine(@"       ║                    v 3 . 6 . 2               ║");
+    Console.WriteLine(@"       ╚═══════════════════════════════════════════════╝");
     Console.ResetColor();
     Console.WriteLine();
 }
@@ -278,3 +378,12 @@ static void Pause()
     Console.WriteLine("Press any key to exit...");
     Console.ReadKey(intercept: true);
 }
+
+record HostConfig(
+    string Key,
+    string DisplayName,
+    string DefaultInstallDir,
+    string ProcessName,
+    string BackupFolderName,
+    string? BridgeDllPath,
+    string? BridgeDllDisplayName);
