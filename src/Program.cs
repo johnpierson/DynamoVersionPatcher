@@ -2,36 +2,31 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Principal;
+using System.Xml.Linq;
 
 // ── host configuration ────────────────────────────────────────────────────────
 
-HostConfig[] knownHosts =
-[
-    new HostConfig(
-        Key:                  "revit",
-        DisplayName:          "Autodesk Revit 2026",
-        DefaultInstallDir:    @"C:\Program Files\Autodesk\Revit 2026\AddIns\DynamoForRevit",
-        ProcessName:          "Revit",
-        BackupFolderName:     "DynamoForRevit_Backup",
-        BridgeDllPath:        @"Revit\DynamoRevitDS.dll",
-        BridgeDllDisplayName: "DynamoRevitDS.dll"),
+HostConfig[] knownHosts = DiscoverHosts();
 
-    new HostConfig(
-        Key:                  "civil3d",
-        DisplayName:          "Autodesk Civil 3D 2026",
-        DefaultInstallDir:    @"C:\Program Files\Autodesk\AutoCAD 2026\C3D\Dynamo\Core",
-        ProcessName:          "acad",
-        BackupFolderName:     "DynamoForCivil3D_Backup",
-        BridgeDllPath:        null,
-        BridgeDllDisplayName: null),
-];
-
-const string DownloadUrl   = "https://github.com/DynamoDS/Dynamo/releases/download/v3.6.2/DynamoCoreRuntime3.6.2.11575.zip";
-const string TargetVersion = "3.6.2.11575";
+if (knownHosts.Length == 0)
+{
+    Console.Title = "DynamoVersionPatcher";
+    WriteHeader();
+    Console.ForegroundColor = ConsoleColor.Red;
+    Console.WriteLine("ERROR: No supported Dynamo installations found under C:\\Program Files\\Autodesk.");
+    Console.WriteLine("       Ensure Revit or Civil 3D is installed with the Dynamo for Revit add-in.");
+    Console.ResetColor();
+    Console.WriteLine();
+    Console.WriteLine("Press any key to exit...");
+    Console.ReadKey(intercept: true);
+    return 1;
+}
 
 // ── argument parsing ──────────────────────────────────────────────────────────
 
 string? hostKey           = null;
+string? versionArg        = null;
+string? buildDirArg       = null;
 string? installDirArg     = null;
 string? zipPath           = null;
 string? backupDirOverride = null;
@@ -43,6 +38,8 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i].ToLowerInvariant())
     {
         case "--host"        when i + 1 < args.Length: hostKey           = args[++i]; break;
+        case "--version"     when i + 1 < args.Length: versionArg        = args[++i]; break;
+        case "--build-dir"   when i + 1 < args.Length: buildDirArg       = args[++i]; break;
         case "--zip-path"    when i + 1 < args.Length: zipPath           = args[++i]; break;
         case "--install-dir" when i + 1 < args.Length: installDirArg     = args[++i]; break;
         case "--backup-dir"  when i + 1 < args.Length: backupDirOverride = args[++i]; break;
@@ -55,6 +52,9 @@ for (int i = 0; i < args.Length; i++)
 
 Console.Title = "DynamoVersionPatcher";
 WriteHeader();
+
+using var http = new HttpClient();
+http.DefaultRequestHeaders.Add("User-Agent", "DynamoVersionPatcher/1.0");
 
 HostConfig host;
 
@@ -103,66 +103,108 @@ string currentVersion = GetFileVersion(coreDll)
     ?? Abort($"DynamoCore.dll not found in:\n  {installDir}");
 Ok($"Current version: {currentVersion}");
 
-if (currentVersion == TargetVersion && !force)
-{
-    Warn($"DynamoCore.dll is already at version {TargetVersion}. Use --force to reinstall.");
-    Pause();
-    return 0;
-}
+// ── acquire source ────────────────────────────────────────────────────────────
 
-// ── acquire zip ───────────────────────────────────────────────────────────────
-
-string localZip;
+string? localZip      = null;
+string? localBuildDir = null;
+string? targetVersion = null;
 
 if (zipPath is not null)
 {
     Step("Using provided zip");
     if (!File.Exists(zipPath))
         Abort($"Zip file not found: {zipPath}");
-    localZip = zipPath;
+    localZip      = zipPath;
+    targetVersion = versionArg;  // null unless --version also supplied
     Ok(Path.GetFileName(zipPath));
 }
 else
 {
-    Step($"Downloading DynamoCoreRuntime {TargetVersion}");
-    string tempDir = Path.Combine(Path.GetTempPath(), $"DynamoCoreRuntime_{TargetVersion}");
-    Directory.CreateDirectory(tempDir);
-    localZip = Path.Combine(tempDir, $"DynamoCoreRuntime{TargetVersion}.zip");
+    BuildInfo build = buildDirArg is not null
+        ? ValidateLocalBuildDir(buildDirArg)
+        : await FetchAndPickBuildAsync(http, versionArg);
 
-    try
+    if (build.LocalPath is not null)
     {
-        await DownloadWithProgressAsync(DownloadUrl, localZip);
-        Ok("Download complete");
+        localBuildDir = build.LocalPath;
+        targetVersion = build.Version;
     }
-    catch (Exception ex)
+    else
     {
-        Abort($"Download failed: {ex.Message}\n\n  Download manually from:\n  {DownloadUrl}\n  then re-run with --zip-path <file>");
+        targetVersion = build.Version;
+
+        if (currentVersion == targetVersion && !force)
+        {
+            Warn($"DynamoCore.dll is already at version {targetVersion}. Use --force to reinstall.");
+            Pause();
+            return 0;
+        }
+
+        Step($"Downloading DynamoCoreRuntime {targetVersion}");
+        string tempDir = Path.Combine(Path.GetTempPath(), $"DynamoCoreRuntime_{targetVersion}");
+        Directory.CreateDirectory(tempDir);
+        localZip = Path.Combine(tempDir, $"DynamoCoreRuntime{targetVersion}.zip");
+
+        try
+        {
+            await DownloadWithProgressAsync(http, build.DownloadUrl, localZip);
+            Ok("Download complete");
+        }
+        catch (Exception ex)
+        {
+            Abort($"Download failed: {ex.Message}\n\n  Download manually from:\n  {build.DownloadUrl}\n  then re-run with --zip-path <file>");
+        }
     }
 }
 
-// ── backup (only files the zip will overwrite) ────────────────────────────────
+if (targetVersion is not null && currentVersion == targetVersion && !force)
+{
+    Warn($"DynamoCore.dll is already at version {targetVersion}. Use --force to reinstall.");
+    Pause();
+    return 0;
+}
+
+// ── backup (only files the source will overwrite) ─────────────────────────────
 
 if (!string.IsNullOrEmpty(backupDir))
 {
-    // Append timestamp so reruns never collide
     backupDir = $"{backupDir}_{DateTime.Now:yyyyMMdd_HHmmss}";
 
     Step("Backing up files to be replaced");
     Console.WriteLine($"  → {backupDir}");
 
-    using var peekArchive = ZipFile.OpenRead(localZip);
     int backedUp = 0;
-    foreach (var entry in peekArchive.Entries)
-    {
-        if (string.IsNullOrEmpty(entry.Name)) continue;
-        string src = Path.Combine(installDir, entry.FullName);
-        if (!File.Exists(src)) continue;
 
-        string dst = Path.Combine(backupDir, entry.FullName);
-        Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-        File.Copy(src, dst, overwrite: true);
-        backedUp++;
+    if (localBuildDir is not null)
+    {
+        foreach (var srcFile in Directory.EnumerateFiles(localBuildDir, "*", SearchOption.AllDirectories))
+        {
+            var rel    = Path.GetRelativePath(localBuildDir, srcFile);
+            var target = Path.Combine(installDir, rel);
+            if (!File.Exists(target)) continue;
+
+            var dst = Path.Combine(backupDir, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.Copy(target, dst, overwrite: true);
+            backedUp++;
+        }
     }
+    else
+    {
+        using var peekArchive = ZipFile.OpenRead(localZip!);
+        foreach (var entry in peekArchive.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Name)) continue;
+            string src = Path.Combine(installDir, entry.FullName);
+            if (!File.Exists(src)) continue;
+
+            string dst = Path.Combine(backupDir, entry.FullName);
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.Copy(src, dst, overwrite: true);
+            backedUp++;
+        }
+    }
+
     Ok($"Backed up {backedUp} file(s)");
 }
 else
@@ -170,38 +212,65 @@ else
     Warn("Skipping backup (--no-backup specified)");
 }
 
-// ── extract ───────────────────────────────────────────────────────────────────
+// ── copy / extract ────────────────────────────────────────────────────────────
 
-Step("Extracting files");
-
-using (var archive = ZipFile.OpenRead(localZip))
+if (localBuildDir is not null)
 {
-    int total  = archive.Entries.Count(e => !string.IsNullOrEmpty(e.Name));
-    int copied = 0;
+    Step("Copying files from local build");
 
-    foreach (var entry in archive.Entries)
+    var srcFiles = Directory.GetFiles(localBuildDir, "*", SearchOption.AllDirectories);
+    int total    = srcFiles.Length;
+    int copied   = 0;
+
+    foreach (var srcFile in srcFiles)
     {
-        if (string.IsNullOrEmpty(entry.Name)) continue;
-
-        string dest    = Path.Combine(installDir, entry.FullName);
-        string destDir = Path.GetDirectoryName(dest)!;
+        var rel     = Path.GetRelativePath(localBuildDir, srcFile);
+        var dest    = Path.Combine(installDir, rel);
+        var destDir = Path.GetDirectoryName(dest)!;
         if (!Directory.Exists(destDir))
             Directory.CreateDirectory(destDir);
 
-        entry.ExtractToFile(dest, overwrite: true);
+        File.Copy(srcFile, dest, overwrite: true);
         copied++;
 
         Console.Write($"\r  {copied,5}/{total} files");
     }
     Console.WriteLine();
-    Ok($"Extracted {copied} files");
+    Ok($"Copied {copied} files");
 }
-
-// Clean up temp download
-if (zipPath is null && File.Exists(localZip))
+else
 {
-    try { Directory.Delete(Path.GetDirectoryName(localZip)!, recursive: true); }
-    catch { /* non-fatal */ }
+    Step("Extracting files");
+
+    using (var archive = ZipFile.OpenRead(localZip!))
+    {
+        int total  = archive.Entries.Count(e => !string.IsNullOrEmpty(e.Name));
+        int copied = 0;
+
+        foreach (var entry in archive.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Name)) continue;
+
+            string dest    = Path.Combine(installDir, entry.FullName);
+            string destDir = Path.GetDirectoryName(dest)!;
+            if (!Directory.Exists(destDir))
+                Directory.CreateDirectory(destDir);
+
+            entry.ExtractToFile(dest, overwrite: true);
+            copied++;
+
+            Console.Write($"\r  {copied,5}/{total} files");
+        }
+        Console.WriteLine();
+        Ok($"Extracted {copied} files");
+    }
+
+    // Clean up temp download
+    if (zipPath is null && File.Exists(localZip!))
+    {
+        try { Directory.Delete(Path.GetDirectoryName(localZip!)!, recursive: true); }
+        catch { /* non-fatal */ }
+    }
 }
 
 // ── verify ────────────────────────────────────────────────────────────────────
@@ -211,8 +280,8 @@ Step("Verifying installation");
 string newVersion = GetFileVersion(coreDll)
     ?? Abort("DynamoCore.dll missing after extraction — something went wrong.");
 
-if (newVersion != TargetVersion)
-    Abort($"Version mismatch after extraction.\n  Expected: {TargetVersion}\n  Found:    {newVersion}");
+if (targetVersion is not null && newVersion != targetVersion)
+    Abort($"Version mismatch after extraction.\n  Expected: {targetVersion}\n  Found:    {newVersion}");
 Ok($"DynamoCore.dll:      {newVersion}");
 
 if (host.BridgeDllPath is not null)
@@ -236,6 +305,277 @@ Pause();
 return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+static BuildInfo ValidateLocalBuildDir(string path)
+{
+    if (!Directory.Exists(path))
+        Abort($"Build directory not found: {path}");
+    var version = GetFileVersion(Path.Combine(path, "DynamoCore.dll"))
+        ?? Abort($"DynamoCore.dll not found in: {path}");
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.Write("  [OK] ");
+    Console.ResetColor();
+    Console.WriteLine($"Local build: {version}");
+    Console.ForegroundColor = ConsoleColor.DarkGray;
+    Console.WriteLine($"         {path}");
+    Console.ResetColor();
+    return new BuildInfo(version, "", DateTime.MinValue, 0, false, path);
+}
+
+static async Task<BuildInfo> FetchAndPickBuildAsync(HttpClient http, string? versionArg)
+{
+    Step("Fetching available Dynamo builds");
+
+    // Same S3 bucket used by dynamobuilds.com
+    const string s3Base = "https://downloads.dynamobuilds.com/";
+    XNamespace   ns     = "http://s3.amazonaws.com/doc/2006-03-01/";
+
+    var stable = new List<BuildInfo>();
+    var daily  = new List<BuildInfo>();
+
+    string? marker    = null;
+    bool    truncated = true;
+
+    while (truncated)
+    {
+        var reqUrl = $"{s3Base}?prefix=DynamoCoreRuntime&max-keys=1000";
+        if (marker is not null) reqUrl += $"&marker={Uri.EscapeDataString(marker)}";
+
+        string xml;
+        try   { xml = await http.GetStringAsync(reqUrl); }
+        catch (Exception ex) { Abort($"Failed to fetch build list: {ex.Message}"); return null!; }
+
+        var doc = XDocument.Parse(xml);
+
+        string? lastKey = null;
+        foreach (var item in doc.Root!.Elements(ns + "Contents"))
+        {
+            var key     = item.Element(ns + "Key")!.Value;
+            var lastMod = DateTime.Parse(item.Element(ns + "LastModified")!.Value,
+                              null, System.Globalization.DateTimeStyles.RoundtripKind);
+            var size    = long.Parse(item.Element(ns + "Size")!.Value);
+            lastKey = key;
+
+            if (!key.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) continue;
+
+            // Daily builds use underscores:  DynamoCoreRuntime_4.1.0.4550_20260401T0353.zip
+            // Stable builds don't:            DynamoCoreRuntime3.6.2.11575.zip
+            bool   isDaily    = key.StartsWith("DynamoCoreRuntime_", StringComparison.OrdinalIgnoreCase);
+            string prefix     = isDaily ? "DynamoCoreRuntime_" : "DynamoCoreRuntime";
+            string versionStr = key[prefix.Length..^".zip".Length];
+
+            if (versionStr.Length == 0 || !char.IsDigit(versionStr[0])) continue;
+
+            var build = new BuildInfo(versionStr, s3Base + key, lastMod, size, isDaily);
+            if (isDaily) daily.Add(build);
+            else         stable.Add(build);
+        }
+
+        truncated = doc.Root!.Element(ns + "IsTruncated")?.Value == "true";
+        marker    = lastKey;
+    }
+
+    stable.Sort((a, b) => ParseVersion(b.Version).CompareTo(ParseVersion(a.Version)));
+    daily.Sort((a, b) => b.PublishedAt.CompareTo(a.PublishedAt));
+
+    if (stable.Count == 0 && daily.Count == 0)
+        Abort("No DynamoCoreRuntime builds found in the build repository.");
+
+    Ok($"Found {stable.Count} stable, {daily.Count} daily build(s)");
+
+    if (versionArg is not null)
+    {
+        if (versionArg.Equals("latest", StringComparison.OrdinalIgnoreCase))
+            return stable.FirstOrDefault() ?? daily.First();
+
+        var all   = stable.Concat(daily).ToList();
+        var match = all.FirstOrDefault(b =>
+            b.Version.StartsWith(versionArg, StringComparison.OrdinalIgnoreCase));
+        if (match is null)
+            Abort($"Version '{versionArg}' not found. Use --version latest for the newest stable release.");
+        return match!;
+    }
+
+    return PickBuild(stable, daily);
+}
+
+static Version ParseVersion(string v)
+{
+    var clean = v.Split('_')[0];
+    return System.Version.TryParse(clean, out var parsed) ? parsed : new System.Version(0, 0);
+}
+
+static BuildInfo PickBuild(List<BuildInfo> stable, List<BuildInfo> daily)
+{
+    bool showDaily = false;
+
+    while (true)
+    {
+        var    current = showDaily ? daily : stable;
+        string label   = showDaily ? "Daily builds" : "Stable releases";
+
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write("==> ");
+        Console.ResetColor();
+        Console.WriteLine($"Select Dynamo runtime  ({label})");
+        Console.WriteLine();
+
+        int display = Math.Min(current.Count, 9);
+        for (int i = 0; i < display; i++)
+        {
+            var b = current[i];
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.Write($"  [{i + 1}]");
+            Console.ResetColor();
+            Console.Write($"  {b.Version,-26}");
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write($"  {b.PublishedAt:yyyy-MM-dd}");
+            Console.Write($"  ({b.Size / 1_048_576} MB)");
+            Console.ResetColor();
+            Console.WriteLine();
+        }
+
+        if (current.Count == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.WriteLine("  (none available)");
+            Console.ResetColor();
+        }
+
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine(showDaily ? "  [S]  stable releases" : "  [D]  daily builds");
+        Console.WriteLine("  [L]  local build directory");
+        Console.ResetColor();
+        Console.WriteLine();
+        Console.Write("  Enter selection: ");
+
+        bool redraw = false;
+        while (!redraw)
+        {
+            var  key = Console.ReadKey(intercept: true);
+            char c   = char.ToUpperInvariant(key.KeyChar);
+
+            if (c == 'D' && !showDaily || c == 'S' && showDaily)
+            {
+                Console.WriteLine();
+                showDaily = !showDaily;
+                redraw = true;
+            }
+            else if (c == 'L')
+            {
+                Console.WriteLine();
+                var result = PromptLocalBuildDir();
+                if (result is not null) return result;
+                redraw = true;  // validation failed — redraw menu
+            }
+            else if (int.TryParse(key.KeyChar.ToString(), out int choice) && choice >= 1 && choice <= display)
+            {
+                Console.WriteLine(key.KeyChar);
+                var selected = current[choice - 1];
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("  [OK] ");
+                Console.ResetColor();
+                Console.WriteLine($"Selected: DynamoCoreRuntime {selected.Version}");
+                return selected;
+            }
+        }
+    }
+}
+
+static BuildInfo? PromptLocalBuildDir()
+{
+    Console.Write("  Enter build directory path: ");
+    Console.CursorVisible = true;
+    var path = Console.ReadLine()?.Trim() ?? "";
+    Console.CursorVisible = false;
+
+    if (string.IsNullOrEmpty(path))
+        return null;
+
+    if (!Directory.Exists(path))
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"  Directory not found: {path}");
+        Console.ResetColor();
+        Console.WriteLine("  Press any key to go back...");
+        Console.ReadKey(intercept: true);
+        return null;
+    }
+
+    var version = GetFileVersion(Path.Combine(path, "DynamoCore.dll"));
+    if (version is null)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine("  DynamoCore.dll not found in that directory.");
+        Console.ResetColor();
+        Console.WriteLine("  Press any key to go back...");
+        Console.ReadKey(intercept: true);
+        return null;
+    }
+
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.Write("  [OK] ");
+    Console.ResetColor();
+    Console.WriteLine($"Local build: {version}");
+    Console.ForegroundColor = ConsoleColor.DarkGray;
+    Console.WriteLine($"         {path}");
+    Console.ResetColor();
+    return new BuildInfo(version, "", DateTime.MinValue, 0, false, path);
+}
+
+static HostConfig[] DiscoverHosts()
+{
+    const string autodesk = @"C:\Program Files\Autodesk";
+    var hosts = new List<HostConfig>();
+
+    if (!Directory.Exists(autodesk))
+        return hosts.ToArray();
+
+    foreach (var dir in Directory.GetDirectories(autodesk).OrderBy(d => d))
+    {
+        var folderName = Path.GetFileName(dir);
+
+        // Revit YYYY  →  ...\Revit 2026\AddIns\DynamoForRevit
+        if (folderName.StartsWith("Revit ", StringComparison.OrdinalIgnoreCase))
+        {
+            var year   = folderName["Revit ".Length..].Trim();
+            var dynDir = Path.Combine(dir, @"AddIns\DynamoForRevit");
+            if (Directory.Exists(dynDir))
+            {
+                hosts.Add(new HostConfig(
+                    Key:                  $"revit-{year}",
+                    DisplayName:          $"Autodesk Revit {year}",
+                    DefaultInstallDir:    dynDir,
+                    ProcessName:          "Revit",
+                    BackupFolderName:     $"DynamoForRevit_{year}_Backup",
+                    BridgeDllPath:        @"Revit\DynamoRevitDS.dll",
+                    BridgeDllDisplayName: "DynamoRevitDS.dll"));
+            }
+        }
+
+        // AutoCAD YYYY (Civil 3D)  →  ...\AutoCAD 2026\C3D\Dynamo\Core
+        else if (folderName.StartsWith("AutoCAD ", StringComparison.OrdinalIgnoreCase))
+        {
+            var year   = folderName["AutoCAD ".Length..].Trim();
+            var dynDir = Path.Combine(dir, @"C3D\Dynamo\Core");
+            if (Directory.Exists(dynDir))
+            {
+                hosts.Add(new HostConfig(
+                    Key:                  $"civil3d-{year}",
+                    DisplayName:          $"Autodesk Civil 3D {year}",
+                    DefaultInstallDir:    dynDir,
+                    ProcessName:          "acad",
+                    BackupFolderName:     $"DynamoForCivil3D_{year}_Backup",
+                    BridgeDllPath:        null,
+                    BridgeDllDisplayName: null));
+            }
+        }
+    }
+
+    return hosts.ToArray();
+}
 
 static HostConfig PickHost(HostConfig[] hosts)
 {
@@ -280,12 +620,8 @@ static bool IsAdministrator() =>
 static string? GetFileVersion(string path) =>
     File.Exists(path) ? FileVersionInfo.GetVersionInfo(path).FileVersion : null;
 
-
-static async Task DownloadWithProgressAsync(string url, string dest)
+static async Task DownloadWithProgressAsync(HttpClient client, string url, string dest)
 {
-    using var client = new HttpClient();
-    client.DefaultRequestHeaders.Add("User-Agent", "DynamoVersionPatcher/3.6.2");
-
     using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
     response.EnsureSuccessStatusCode();
 
@@ -330,8 +666,12 @@ static void WriteHeader()
     Console.WriteLine();
     Console.WriteLine(@"       ╔═══════════════════════════════════════════════╗");
     Console.WriteLine(@"       ║        V E R S I O N   P A T C H E R         ║");
-    Console.WriteLine(@"       ║                    v 3 . 6 . 2               ║");
     Console.WriteLine(@"       ╚═══════════════════════════════════════════════╝");
+    Console.ResetColor();
+    Console.WriteLine();
+    Console.ForegroundColor = ConsoleColor.Yellow;
+    Console.WriteLine("  Note: intended for minor patch updates only (e.g. 3.6.x → 3.6.y).");
+    Console.WriteLine("        Not designed for jumping across major or minor versions.");
     Console.ResetColor();
     Console.WriteLine();
 }
@@ -387,3 +727,11 @@ record HostConfig(
     string BackupFolderName,
     string? BridgeDllPath,
     string? BridgeDllDisplayName);
+
+record BuildInfo(
+    string   Version,
+    string   DownloadUrl,
+    DateTime PublishedAt,
+    long     Size,
+    bool     IsDaily,
+    string?  LocalPath = null);

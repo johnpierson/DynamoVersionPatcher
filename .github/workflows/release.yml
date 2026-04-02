@@ -1,0 +1,104 @@
+name: Release on PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.x'
+
+      - name: Read and bump patch version
+        id: version
+        shell: pwsh
+        run: |
+          $csproj = "src/DynamoCoreUpdate.csproj"
+          $xml = [xml](Get-Content $csproj)
+          $current = $xml.Project.PropertyGroup[0].FileVersion   # e.g. 0.0.3.0
+          $parts   = $current.Split('.')
+          $parts[2] = [string]([int]$parts[2] + 1)
+          $parts[3] = '0'
+          $next = $parts -join '.'          # e.g. 0.0.4.0
+          $tag  = 'v' + ($parts[0..2] -join '.')  # e.g. v0.0.4
+
+          # Write back
+          $xml.Project.PropertyGroup[0].FileVersion    = $next
+          $xml.Project.PropertyGroup[0].AssemblyVersion = $next
+          $xml.Save((Resolve-Path $csproj))
+
+          echo "current=$current" >> $env:GITHUB_OUTPUT
+          echo "next=$next"       >> $env:GITHUB_OUTPUT
+          echo "tag=$tag"         >> $env:GITHUB_OUTPUT
+
+      - name: Commit version bump
+        shell: pwsh
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/DynamoCoreUpdate.csproj
+          git commit -m "chore: bump version to ${{ steps.version.outputs.tag }}"
+          git push
+
+      - name: Build
+        shell: pwsh
+        run: |
+          dotnet publish src/DynamoCoreUpdate.csproj -c Release -p:PublishSingleFile=true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          files: src/dist/DynamoCoreUpdate.exe
+          generate_release_notes: true
+          body: |
+            ## What's changed
+            ${{ github.event.pull_request.title }}
+
+            ${{ github.event.pull_request.body }}
+
+            ---
+
+            ## Usage
+
+            > **Note:** intended for minor patch updates only (e.g. 3.6.x → 3.6.y). Not designed for jumping across major or minor versions.
+
+            ### Quick start
+
+            1. **Close Revit or Civil 3D** completely.
+            2. Download `DynamoCoreUpdate.exe` below.
+            3. Right-click and choose **Run as administrator**.
+            4. Select your host application from the menu and follow the prompts.
+
+            > First run will trigger a Windows SmartScreen prompt — click **More info → Run anyway**.
+
+            ### Options
+
+            ```
+            DynamoCoreUpdate.exe [--host <revit|civil3d>] [--install-dir <path>] [--zip-path <file>] [--backup-dir <path>] [--no-backup] [--force]
+            ```
+
+            | Flag | Description |
+            |------|-------------|
+            | `--host <revit\|civil3d>` | Target host. If omitted, an interactive menu is shown |
+            | `--install-dir <path>` | Path to the Dynamo folder. Defaults to the standard install location |
+            | `--zip-path <file>` | Use a locally downloaded zip instead of fetching from the build server |
+            | `--backup-dir <path>` | Override the default backup location |
+            | `--no-backup` | Skip the backup step |
+            | `--force` | Re-install even if already on the target version |

@@ -8,6 +8,8 @@ Supported hosts:
 
 > **Use at your own risk.** This tool modifies files inside your Autodesk installation. It is unofficial and unaffiliated with Autodesk or the Dynamo team. A backup is taken automatically before any changes are made.
 
+> **Intended for minor patch updates only.** This tool is designed to apply small, incremental runtime updates (e.g. 3.6.x → 3.6.y) — not to jump across major or minor versions. Using it to bridge large version gaps is untested and likely to cause instability or breakage.
+
 ## Why this exists
 
 Autodesk ships a specific version of DynamoCore with each product release, and it doesn't always keep pace with the latest fixes and improvements coming out of the Dynamo open-source project. This tool lets you apply a newer runtime yourself — immediately, on your own terms.
