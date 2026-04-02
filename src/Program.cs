@@ -665,7 +665,7 @@ static void WriteHeader()
     Console.ForegroundColor = ConsoleColor.DarkCyan;
     Console.WriteLine();
     Console.WriteLine(@"       ╔═══════════════════════════════════════════════╗");
-    Console.WriteLine(@"       ║        V E R S I O N   P A T C H E R         ║");
+    Console.WriteLine(@"       ║        V E R S I O N   P A T C H E R          ║");
     Console.WriteLine(@"       ╚═══════════════════════════════════════════════╝");
     Console.ResetColor();
     Console.WriteLine();
