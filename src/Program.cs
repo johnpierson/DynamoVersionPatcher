@@ -1,8 +1,13 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Xml.Linq;
+
+// Prevent the console freezing on stray clicks (QuickEdit selection mode),
+// which otherwise stalls long steps like backup until a key is pressed.
+DisableQuickEdit();
 
 // ── host configuration ────────────────────────────────────────────────────────
 
@@ -717,6 +722,37 @@ static void Pause()
     Console.WriteLine();
     Console.WriteLine("Press any key to exit...");
     Console.ReadKey(intercept: true);
+}
+
+// Turn off QuickEdit mode so a stray mouse click doesn't put the console into
+// selection mode and freeze output mid-run. No-op on non-Windows / redirected input.
+static void DisableQuickEdit()
+{
+    if (!OperatingSystem.IsWindows()) return;
+    try
+    {
+        const int  STD_INPUT_HANDLE      = -10;
+        const uint ENABLE_QUICK_EDIT     = 0x0040;
+        const uint ENABLE_EXTENDED_FLAGS = 0x0080;
+
+        nint handle = GetStdHandle(STD_INPUT_HANDLE);
+        if (handle == 0 || handle == -1) return;
+        if (!GetConsoleMode(handle, out uint mode)) return;
+
+        mode &= ~ENABLE_QUICK_EDIT;
+        mode |= ENABLE_EXTENDED_FLAGS;
+        SetConsoleMode(handle, mode);
+    }
+    catch { /* non-fatal — leave QuickEdit as-is */ }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern nint GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetConsoleMode(nint hConsoleHandle, out uint lpMode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetConsoleMode(nint hConsoleHandle, uint dwMode);
 }
 
 record HostConfig(
