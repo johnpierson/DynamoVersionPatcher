@@ -138,7 +138,7 @@ else
     {
         targetVersion = build.Version;
 
-        if (currentVersion == targetVersion && !force)
+        if (currentVersion == NumericVersion(targetVersion) && !force)
         {
             Warn($"DynamoCore.dll is already at version {targetVersion}. Use --force to reinstall.");
             Pause();
@@ -162,7 +162,7 @@ else
     }
 }
 
-if (targetVersion is not null && currentVersion == targetVersion && !force)
+if (targetVersion is not null && currentVersion == NumericVersion(targetVersion) && !force)
 {
     Warn($"DynamoCore.dll is already at version {targetVersion}. Use --force to reinstall.");
     Pause();
@@ -285,7 +285,7 @@ Step("Verifying installation");
 string newVersion = GetFileVersion(coreDll)
     ?? Abort("DynamoCore.dll missing after extraction — something went wrong.");
 
-if (targetVersion is not null && newVersion != targetVersion)
+if (targetVersion is not null && newVersion != NumericVersion(targetVersion))
     Abort($"Version mismatch after extraction.\n  Expected: {targetVersion}\n  Found:    {newVersion}");
 Ok($"DynamoCore.dll:      {newVersion}");
 
@@ -409,6 +409,10 @@ static Version ParseVersion(string v)
     var clean = v.Split('_')[0];
     return System.Version.TryParse(clean, out var parsed) ? parsed : new System.Version(0, 0);
 }
+
+// Daily-build version strings carry a timestamp suffix (4.2.0.5817_20260805T2339)
+// that never appears in the DLL's file version — strip it before comparing.
+static string NumericVersion(string v) => v.Split('_')[0];
 
 static BuildInfo PickBuild(List<BuildInfo> stable, List<BuildInfo> daily)
 {
